@@ -5,13 +5,14 @@ import numpy as np
 from inspect import signature
 
 from colabdesign.af.alphafold.model import data, config, model, all_atom
+from colabdesign.af.alphafold.model.msa import make_msa_feats
 
 from colabdesign.shared.model import design_model
 from colabdesign.shared.utils import Key
 
 from colabdesign.af.prep   import _af_prep
 from colabdesign.af.loss   import _af_loss, get_plddt, get_pae, get_ptm
-from colabdesign.af.loss   import get_contact_map, get_seq_ent_loss, get_mlm_loss
+from colabdesign.af.loss   import get_contact_map
 from colabdesign.af.utils  import _af_utils
 from colabdesign.af.design import _af_design
 from colabdesign.af.inputs import _af_inputs
@@ -35,8 +36,8 @@ class mk_af_model(design_model, _af_inputs, _af_loss, _af_prep, _af_design, _af_
     self._args = {"use_templates":use_templates, "num_templates":0,
                   "use_multimer":use_multimer, "use_bfloat16":True,
                   "optimize_seq":True, "recycle_mode":"last", 
-                  "use_mlm": False, "mask_target":False, "unbias_mlm": False,
-                  "realign": True, "use_sidechains": False,
+                  "realign": True, "use_sidechains": False, 
+                  "num_msa":512, "num_extra_msa":1024, "use_mlm": False, "cluster_msa": False,
                   "debug":debug, "repeat":False, "homooligomer":False, "copies":1,
                   "optimizer":"sgd", "best_metric":"loss", 
                   "traj_iter":1, "traj_max":10000,
@@ -53,7 +54,7 @@ class mk_af_model(design_model, _af_inputs, _af_loss, _af_prep, _af_design, _af_
                 "con":      {"num":2, "cutoff":14.0, "binary":False, "seqsep":9, "num_pos":float("inf")},
                 "i_con":    {"num":1, "cutoff":21.6875, "binary":False, "num_pos":float("inf")},
                 "template": {"rm_ic":False},                
-                "weights":  {"seq_ent":0.0, "plddt":0.0, "pae":0.0, "exp_res":0.0, "helix":0.0},
+                "weights":  {"plddt":0.0, "pae":0.0, "exp_res":0.0, "helix":0.0},
                 "fape_cutoff":10.0}
 
     self._params = {}
@@ -71,6 +72,13 @@ class mk_af_model(design_model, _af_inputs, _af_loss, _af_prep, _af_design, _af_
 
     assert self._args["recycle_mode"] in ["average","first","last","sample"]
 
+    # set num_msa/num_extra_msa
+    if self._num < self._args["num_msa"]:
+      self._args["num_msa"] = self._num
+      self._args["num_extra_msa"] = 1
+    elif self._num < (self._args["num_msa"] + self._args["num_extra_msa"]):
+      self._args["num_extra_msa"] = self.num - self._args["num_msa"]
+
     if self._args["use_templates"] and self._args["num_templates"] == 0:
       self._args["num_templates"] = 1
 
@@ -86,10 +94,6 @@ class mk_af_model(design_model, _af_inputs, _af_loss, _af_prep, _af_design, _af_
         if v is None: v = []
         if not isinstance(v,list): v = [v]
         self._callbacks[m][k] = v
-
-    if self._args["use_mlm"]:
-      self.opt["mlm_dropout"] = 0.15
-      self.opt["weights"]["mlm"] = 0.1
 
     assert len(kwargs) == 0, f"ERROR: the following inputs were not set: {kwargs}"
 
@@ -158,6 +162,10 @@ class mk_af_model(design_model, _af_inputs, _af_loss, _af_prep, _af_design, _af_
         # TODO
         inputs["seq"] = seq = None
 
+      # make msa features
+      inputs = make_msa_feats(inputs, key(), 
+        **{k:self._args[k] for k in ["num_msa","num_extra_msa","use_mlm", "cluster_msa"]})
+
       # define masks
       inputs["msa_mask"] = jnp.where(inputs["seq_mask"],inputs["msa_mask"],0)
 
@@ -208,16 +216,6 @@ class mk_af_model(design_model, _af_inputs, _af_loss, _af_prep, _af_design, _af_
 
       # add protocol specific losses
       self._get_loss(inputs=inputs, outputs=outputs, aux=aux)
-
-      # sequence entropy loss
-      if a["optimize_seq"]:
-        aux["losses"].update(get_seq_ent_loss(inputs))    
-        # experimental masked-language-modeling
-        if a["use_mlm"]:
-          aux["mlm"] = outputs["masked_msa"]["logits"]
-          mask = jnp.where(inputs["seq_mask"],aux["mlm_mask"],0)
-          aux["losses"].update(get_mlm_loss(outputs, mask=mask,
-            truth=seq["pssm"], unbias=a["unbias_mlm"]))
 
       # run user defined callbacks
       for c in ["loss","post"]:
