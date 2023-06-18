@@ -435,6 +435,18 @@ def generate_affines(representations, batch, config, global_config, safe_key):
         unstack_inputs=True).scale_translation(1/c.position_scale)
   else:
     # affine = generate_new_affine(sequence_mask)
+      atom = residue_constants.atom_order
+    atom_pos = batch["big_bang"]
+    rot, trans = quat_affine.make_transform_from_reference(
+        n_xyz=atom_pos[:, atom["N"]],
+        ca_xyz=atom_pos[:, atom["CA"]],
+        c_xyz=atom_pos[:, atom["C"]])
+    
+    affine = quat_affine.QuatAffine(
+        quaternion=quat_affine.rot_to_quat(rot, unstack_inputs=True),
+        translation=trans,
+        rotation=rot,
+        unstack_inputs=True).scale_translation(1/c.position_scale)  # Big-Bang
 
   fold_iteration = FoldIteration(
       c, global_config, name='fold_iteration')
