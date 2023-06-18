@@ -434,7 +434,7 @@ def generate_affines(representations, batch, config, global_config, safe_key):
         rotation=rot,
         unstack_inputs=True).scale_translation(1/c.position_scale)
   else:
-    affine = generate_new_affine(sequence_mask)
+    # affine = generate_new_affine(sequence_mask)
 
   fold_iteration = FoldIteration(
       c, global_config, name='fold_iteration')
